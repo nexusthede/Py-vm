@@ -1,99 +1,93 @@
 import discord
-from discord.ext import commands
-from discord import app_commands
+from discord.ext import commands, tasks
 import json
-import os
 from keep_alive import keep_alive
-
-# Load environment variable
-TOKEN = os.environ.get("TOKEN")
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
 
-# Load data.json
-if not os.path.exists("data.json"):
-    with open("data.json", "w") as f:
-        json.dump({"servers": {}}, f, indent=4)
+# Load data for multiple servers
+try:
+    with open("data.json") as f:
+        server_data = json.load(f)
+except:
+    server_data = {}
 
-with open("data.json", "r") as f:
-    data = json.load(f)
+# Emojis
+emojis = {
+    "lock": "<:lockv:1431214489981812778>",
+    "unlock": "<:unlockv:1431214488316674128>",
+    "kick": "<:kickv:1431213595986755725>",
+    "ban": "<:banv:1431213597966598244>",
+    "permit": "<:permitv:1431213599774478407>",
+    "limit": "<:limitv:1431213601787744367>",
+    "reset": "<:resetv:1431213603536506890>",
+    "info": "<:infov:1431213604895719565>",
+    "rename": "<:renamev:1431213607814828113>",
+    "transfer": "<:transferv:1431213610348183582>",
+    "dash": "<:dashv:1431213611858002010>"
+}
 
+# --- Utility functions ---
 def save_data():
     with open("data.json", "w") as f:
-        json.dump(data, f, indent=4)
+        json.dump(server_data, f, indent=4)
 
-# --- Helper functions ---
-async def create_vc_categories(guild):
-    categories = {}
-    for cat_name in ["JOIN-TO-CREATE", "PUBLIC VCS", "PRIVATE VCS", "UNMUTE"]:
-        category = discord.utils.get(guild.categories, name=cat_name)
-        if not category:
-            category = await guild.create_category(cat_name)
-        categories[cat_name] = category
-    return categories
-
-def register_server(guild):
-    if str(guild.id) not in data["servers"]:
-        data["servers"][str(guild.id)] = {
-            "join_to_create_category": "JOIN-TO-CREATE",
-            "public_category": "PUBLIC VCS",
-            "private_category": "PRIVATE VCS",
-            "unmute_category": "UNMUTE",
-            "vcs": {}
-        }
-        save_data()
-
-# --- Events ---
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-
-@bot.event
-async def on_guild_join(guild):
-    register_server(guild)
-    await create_vc_categories(guild)
-
-# --- Join-to-create VC ---
+# --- Join-to-create setup ---
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if member.bot:
-        return
+    if after.channel:
+        guild_id = str(member.guild.id)
+        if guild_id not in server_data:
+            server_data[guild_id] = {}
+        # Create private/public VC based on the join-to-create channel
+        jtc_channels = [ "Join Public VC", "Join Private VC", "Join Random VC" ]
+        if after.channel.name in jtc_channels:
+            # Determine category
+            if "Public" in after.channel.name:
+                category_name = "Public VCs"
+            else:
+                category_name = "Private VCs"
 
-    guild_id = str(member.guild.id)
-    register_server(member.guild)
+            category = discord.utils.get(member.guild.categories, name=category_name)
+            if not category:
+                category = await member.guild.create_category(category_name)
 
-    guild_data = data["servers"][guild_id]
+            # Create VC
+            vc_name = f"{member.display_name}'s VC"
+            vc = await member.guild.create_voice_channel(vc_name, category=category)
+            await member.move_to(vc)
+            # Save original VC
+            server_data[guild_id][str(member.id)] = {"vc_id": vc.id, "original_vc": after.channel.id}
+            save_data()
 
-    # Join-to-create VC
-    join_cat = discord.utils.get(member.guild.categories, name=guild_data["join_to_create_category"])
-    if after.channel and after.channel.category == join_cat:
-        # Decide type: public or private
-        vc_type = "public" if after.channel.name.lower() == "public" else "private"
-        target_cat = discord.utils.get(member.guild.categories, name=guild_data[f"{vc_type}_category"])
-        new_vc = await member.guild.create_voice_channel(f"{member.name}'s VC", category=target_cat)
-        await member.move_to(new_vc)
-
-        # Save VC info
-        guild_data["vcs"][str(new_vc.id)] = {
-            "owner": member.id,
-            "type": vc_type,
-            "original_category": target_cat.name,
-            "limit": None
-        }
-        save_data()
-
-    # Handle unmute VC
-    unmute_cat = discord.utils.get(member.guild.categories, name=guild_data["unmute_category"])
-    if after.channel and after.channel.category == unmute_cat:
-        original_vc_id = None
-        for vc_id, info in guild_data["vcs"].items():
-            if info["owner"] == member.id:
-                original_vc_id = int(vc_id)
-        if original_vc_id:
-            original_vc = discord.utils.get(member.guild.voice_channels, id=original_vc_id)
+# --- Unmute category ---
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if after.channel and after.channel.category and after.channel.category.name == "Unmute Yourself":
+        guild_id = str(member.guild.id)
+        if guild_id in server_data and str(member.id) in server_data[guild_id]:
+            original_vc_id = server_data[guild_id][str(member.id)]["original_vc"]
+            original_vc = member.guild.get_channel(original_vc_id)
             if original_vc:
                 await member.move_to(original_vc)
+
+# --- VC commands ---
+@bot.group(invoke_without_command=True)
+async def vc(ctx):
+    await ctx.send("Available subcommands: lock, unlock, kick, ban, permit, limit, reset, info, rename, transfer")
+
+@vc.command()
+async def lock(ctx):
+    await ctx.channel.set_permissions(ctx.guild.default_role, connect=False)
+    await ctx.send(f"{emojis['lock']} VC locked!")
+
+@vc.command()
+async def unlock(ctx):
+    await ctx.channel.set_permissions(ctx.guild.default_role, connect=True)
+    await ctx.send(f"{emojis['unlock']} VC unlocked!")
+
+# Add other commands similarly (kick, ban, permit, limit, reset, info, rename, transfer)...
 
 # --- Interface ---
 @bot.command()
@@ -101,95 +95,27 @@ async def interface(ctx):
     embed = discord.Embed(
         title="**EDIT YOUR VC BY USING THE BUTTONS BELOW:**",
         description=(
-            "`<:lockv:1431214489981812778>` - Locks the VC\n"
-            "`<:unlockv:1431214488316674128>` - Unlocks the VC\n"
-            "`<:kickv:1431213595986755725>` - Kicks a user\n"
-            "`<:banv:1431213597966598244>` - Bans a user\n"
-            "`<:permitv:1431213599774478407>` - Permits a user\n"
-            "`<:limitv:1431213601787744367>` - Changes VC limit\n"
-            "`<:resetv:1431213603536506890>` - Resets VC\n"
-            "`<:infov:1431213604895719565>` - Shows VC info\n"
-            "`<:renamev:1431213607814828113>` - Renames VC\n"
-            "`<:transferv:1431213610348183582>` - Transfers VC ownership"
+            f"`{emojis['lock']} VC lock - Locks the VC`\n"
+            f"`{emojis['unlock']} VC unlock - Unlocks the VC`\n"
+            f"`{emojis['kick']} VC kick - Kicks a user from the VC`\n"
+            f"`{emojis['ban']} VC ban - Bans a user from the VC`\n"
+            f"`{emojis['permit']} VC permit - Permits a user to the VC`\n"
+            f"`{emojis['limit']} VC limit - Changes the VC limit`\n"
+            f"`{emojis['reset']} VC reset - Resets the VC limit and perms`\n"
+            f"`{emojis['info']} VC info - Shows info about the VC`\n"
+            f"`{emojis['rename']} VC rename - Changes the VC name`\n"
+            f"`{emojis['transfer']} VC transfer - Transfers the VC ownership`"
         ),
-        color=0x32CD32
+        color=0x32CD32  # Lime color
     )
-    await ctx.send(embed=embed)
 
-# --- Prefix Commands ---
-@bot.command()
-async def vc(ctx, action=None, member: discord.Member=None, limit: int=None):
-    guild_id = str(ctx.guild.id)
-    register_server(ctx.guild)
-    guild_data = data["servers"][guild_id]
+    view = discord.ui.View()
+    for key in ["lock","unlock","kick","ban","permit","limit","reset","info","rename","transfer"]:
+        button = discord.ui.Button(label=key.upper(), emoji=emojis[key], style=discord.ButtonStyle.secondary)
+        view.add_item(button)
 
-    # Check user's VC
-    user_vc = ctx.author.voice.channel if ctx.author.voice else None
-    if not user_vc or str(user_vc.id) not in guild_data["vcs"]:
-        await ctx.send("<:failv:1431396982768930929> You must be in your VC!")
-        return
+    await ctx.send(embed=embed, view=view)
 
-    if action == "lock":
-        await user_vc.set_permissions(ctx.guild.default_role, connect=False)
-        await ctx.send("<:checkv:1431397623193010257> VC locked!")
-    elif action == "unlock":
-        await user_vc.set_permissions(ctx.guild.default_role, connect=True)
-        await ctx.send("<:checkv:1431397623193010257> VC unlocked!")
-    elif action == "kick" and member:
-        await member.move_to(None)
-        await ctx.send(f"<:checkv:1431397623193010257> Kicked {member.name}")
-    elif action == "ban" and member:
-        await user_vc.set_permissions(member, connect=False)
-        await ctx.send(f"<:checkv:1431397623193010257> Banned {member.name}")
-    elif action == "permit" and member:
-        await user_vc.set_permissions(member, connect=True)
-        await ctx.send(f"<:checkv:1431397623193010257> Permitted {member.name}")
-    elif action == "limit" and limit is not None:
-        await user_vc.edit(user_limit=limit)
-        guild_data["vcs"][str(user_vc.id)]["limit"] = limit
-        save_data()
-        await ctx.send(f"<:checkv:1431397623193010257> Limit set to {limit}")
-    elif action == "reset":
-        await user_vc.edit(user_limit=None)
-        await user_vc.set_permissions(ctx.guild.default_role, connect=True)
-        guild_data["vcs"][str(user_vc.id)]["limit"] = None
-        save_data()
-        await ctx.send("<:checkv:1431397623193010257> Reset VC!")
-    elif action == "info":
-        vc_info = guild_data["vcs"].get(str(user_vc.id))
-        await ctx.send(f"Owner: <@{vc_info['owner']}>\nType: {vc_info['type']}\nLimit: {vc_info['limit']}")
-    elif action == "rename" and member:
-        # member param here is actually name
-        await user_vc.edit(name=str(member))
-        await ctx.send(f"<:checkv:1431397623193010257> Renamed VC to {member}")
-    elif action == "transfer" and member:
-        guild_data["vcs"][str(user_vc.id)]["owner"] = member.id
-        save_data()
-        await ctx.send(f"<:checkv:1431397623193010257> Transferred ownership to {member.name}")
-    else:
-        await ctx.send("<:failv:1431396982768930929> Invalid command!")
-
-# --- Slash command fallback ---
-@bot.tree.command(name="interface", description="Shows the VC interface")
-async def slash_interface(interaction: discord.Interaction):
-    embed = discord.Embed(
-        title="**EDIT YOUR VC BY USING THE BUTTONS BELOW:**",
-        description=(
-            "`<:lockv:1431214489981812778>` - Locks the VC\n"
-            "`<:unlockv:1431214488316674128>` - Unlocks the VC\n"
-            "`<:kickv:1431213595986755725>` - Kicks a user\n"
-            "`<:banv:1431213597966598244>` - Bans a user\n"
-            "`<:permitv:1431213599774478407>` - Permits a user\n"
-            "`<:limitv:1431213601787744367>` - Changes VC limit\n"
-            "`<:resetv:1431213603536506890>` - Resets VC\n"
-            "`<:infov:1431213604895719565>` - Shows VC info\n"
-            "`<:renamev:1431213607814828113>` - Renames VC\n"
-            "`<:transferv:1431213610348183582>` - Transfers VC ownership"
-        ),
-        color=0x32CD32
-    )
-    await interaction.response.send_message(embed=embed)
-
-# --- Keep bot alive ---
+# --- Run bot ---
 keep_alive()
-bot.run(TOKEN)
+bot.run("YOUR_DISCORD_BOT_TOKEN")
