@@ -13,13 +13,13 @@ intents.members = True
 intents.guilds = True
 intents.voice_states = True
 intents.messages = True
-intents.message_content = True  # needed for prefix commands
+intents.message_content = True
 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# Custom Emojis
-SUCCESS = "<:check_markv:1431619384987615383>"
-FAIL = "<:x_markv:1431619387168657479>"
+# Emojis
+SUCCESS = "✅"
+FAIL = "❌"
 
 # Category & VC Names
 JOIN_CREATE_CATEGORY = "Join to Create"
@@ -32,7 +32,7 @@ CREATE_PRIVATE_VC = "Create Private VC"
 
 UNMUTE_VCS = ["Unmute VC 1", "Unmute VC 2"]
 
-# Keep track of server setup
+# Track server setup
 server_setup = {}
 
 # ---------- BOT EVENTS ----------
@@ -40,8 +40,8 @@ server_setup = {}
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
 
-# ---------- BOT COMMANDS ----------
-@bot.command(name="vmsetup")
+# ---------- VM COMMANDS ----------
+@bot.command()
 @commands.has_permissions(administrator=True)
 async def vmsetup(ctx):
     guild = ctx.guild
@@ -50,17 +50,17 @@ async def vmsetup(ctx):
             await ctx.send(f"{FAIL} VM system already set up for this server.")
             return
 
-        # Create Categories
+        # Create categories
         join_category = await guild.create_category(JOIN_CREATE_CATEGORY)
         public_category = await guild.create_category(PUBLIC_CATEGORY)
         private_category = await guild.create_category(PRIVATE_CATEGORY)
         unmute_category = await guild.create_category(UNMUTE_CATEGORY)
 
-        # Create Join-to-Create VCs
+        # Create join-to-create VCs
         await guild.create_voice_channel(CREATE_PUBLIC_VC, category=join_category)
         await guild.create_voice_channel(CREATE_PRIVATE_VC, category=join_category)
 
-        # Create Unmute VCs
+        # Create unmute VCs
         for vc_name in UNMUTE_VCS:
             await guild.create_voice_channel(vc_name, category=unmute_category)
 
@@ -77,7 +77,7 @@ async def vmsetup(ctx):
     except Exception as e:
         await ctx.send(f"{FAIL} Failed to set up VM system.\nError: {e}")
 
-@bot.command(name="vmreset")
+@bot.command()
 @commands.has_permissions(administrator=True)
 async def vmreset(ctx):
     guild = ctx.guild
@@ -100,22 +100,13 @@ async def vmreset(ctx):
     except Exception as e:
         await ctx.send(f"{FAIL} Failed to reset VM system.\nError: {e}")
 
-@bot.command(name="vmcommands")
+@bot.command()
 async def vmcommands(ctx):
-    commands_list = (
-        ".vmsetup - Setup VM system (Admin only)\n"
-        ".vmreset - Reset VM system (Admin only)\n"
-        ".vc lock - Lock your VC\n"
-        ".vc unlock - Unlock your VC\n"
-        ".vc kick - Kick a member from your VC\n"
-        ".vc ban - Ban a member from your VC\n"
-        ".vc permit - Permit a member to join your VC\n"
-        ".vc limit - Set a user limit for your VC\n"
-        ".vc rename - Rename your VC\n"
-        ".vc transfer - Transfer VC ownership\n"
-        ".vc unmute - Unmute your VC"
-    )
-    await ctx.send(f"**VM & VC Commands:**\n{commands_list}")
+    embed = discord.Embed(title="VM Master Commands", color=discord.Color.blue())
+    embed.add_field(name=".vmsetup", value="Setup VM system (Admin only)", inline=False)
+    embed.add_field(name=".vmreset", value="Reset VM system (Admin only)", inline=False)
+    embed.add_field(name="VC Master", value="Join Public/Private VC to create your own temporary VC", inline=False)
+    await ctx.send(embed=embed)
 
 # ---------- JOIN TO CREATE HANDLER ----------
 @bot.event
@@ -131,20 +122,18 @@ async def on_voice_state_update(member, before, after):
     join_category = get(guild.categories, id=setup["join_category"])
 
     if after.channel and after.channel.category == join_category:
-        # Determine type
         if after.channel.name == CREATE_PUBLIC_VC:
             category = get(guild.categories, id=setup["public_category"])
-            vc_name = f"@{member.name}'s channel"
+            vc_name = f"{member.display_name}'s channel"
             perms = None
         else:
             category = get(guild.categories, id=setup["private_category"])
-            vc_name = f"@{member.name}'s channel"
+            vc_name = f"{member.display_name}'s channel"
             perms = {
                 guild.default_role: discord.PermissionOverwrite(connect=False),
                 member: discord.PermissionOverwrite(connect=True)
             }
 
-        # Create temp VC
         if perms:
             temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
         else:
@@ -152,7 +141,6 @@ async def on_voice_state_update(member, before, after):
 
         await member.move_to(temp_vc)
 
-        # Delete VC when empty
         async def delete_when_empty(vc):
             while True:
                 await asyncio.sleep(10)
@@ -163,99 +151,89 @@ async def on_voice_state_update(member, before, after):
         bot.loop.create_task(delete_when_empty(temp_vc))
 
 # ---------- VC MASTER COMMANDS ----------
-async def get_user_vc(ctx):
-    if ctx.author.voice and ctx.author.voice.channel:
-        return ctx.author.voice.channel
-    await ctx.send(f"{FAIL} You are not in a VC!")
+async def get_member_vc(member):
+    if member.voice and member.voice.channel:
+        return member.voice.channel
     return None
 
-@bot.command(name="vc lock")
+@bot.command()
 async def vc_lock(ctx):
-    vc = await get_user_vc(ctx)
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
     await vc.set_permissions(ctx.guild.default_role, connect=False)
-    await ctx.send(f"{SUCCESS} VC locked!")
+    await ctx.send(f"{SUCCESS} {vc.name} locked.")
 
-@bot.command(name="vc unlock")
+@bot.command()
 async def vc_unlock(ctx):
-    vc = await get_user_vc(ctx)
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
     await vc.set_permissions(ctx.guild.default_role, connect=True)
-    await ctx.send(f"{SUCCESS} VC unlocked!")
+    await ctx.send(f"{SUCCESS} {vc.name} unlocked.")
 
-@bot.command(name="vc kick")
+@bot.command()
 async def vc_kick(ctx, member: discord.Member):
-    vc = await get_user_vc(ctx)
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
-    try:
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
+    if member in vc.members:
         await member.move_to(None)
-        await ctx.send(f"{SUCCESS} Kicked {member.name} from the VC!")
-    except:
-        await ctx.send(f"{FAIL} Could not kick {member.name}.")
+        await ctx.send(f"{SUCCESS} {member.display_name} kicked from {vc.name}.")
+    else:
+        await ctx.send(f"{FAIL} {member.display_name} is not in your VC.")
 
-@bot.command(name="vc ban")
+@bot.command()
 async def vc_ban(ctx, member: discord.Member):
-    vc = await get_user_vc(ctx)
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
-    try:
-        await vc.set_permissions(member, connect=False)
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
+    await vc.set_permissions(member, connect=False)
+    if member in vc.members:
         await member.move_to(None)
-        await ctx.send(f"{SUCCESS} Banned {member.name} from the VC!")
-    except:
-        await ctx.send(f"{FAIL} Could not ban {member.name}.")
+    await ctx.send(f"{SUCCESS} {member.display_name} banned from {vc.name}.")
 
-@bot.command(name="vc permit")
+@bot.command()
 async def vc_permit(ctx, member: discord.Member):
-    vc = await get_user_vc(ctx)
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
-    try:
-        await vc.set_permissions(member, connect=True)
-        await ctx.send(f"{SUCCESS} Permitted {member.name} to join the VC!")
-    except:
-        await ctx.send(f"{FAIL} Could not permit {member.name}.")
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
+    await vc.set_permissions(member, connect=True)
+    await ctx.send(f"{SUCCESS} {member.display_name} can now join {vc.name}.")
 
-@bot.command(name="vc limit")
+@bot.command()
 async def vc_limit(ctx, limit: int):
-    vc = await get_user_vc(ctx)
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
     await vc.edit(user_limit=limit)
-    await ctx.send(f"{SUCCESS} VC user limit set to {limit}!")
+    await ctx.send(f"{SUCCESS} {vc.name} limit set to {limit}.")
 
-@bot.command(name="vc rename")
-async def vc_rename(ctx, *, new_name):
-    vc = await get_user_vc(ctx)
+@bot.command()
+async def vc_rename(ctx, *, name: str):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
-    new_vc_name = f"@{ctx.author.name}'s {new_name}"
-    await vc.edit(name=new_vc_name)
-    await ctx.send(f"{SUCCESS} VC renamed to {new_vc_name}!")
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
+    await vc.edit(name=name)
+    await ctx.send(f"{SUCCESS} VC renamed to {name}.")
 
-@bot.command(name="vc transfer")
+@bot.command()
 async def vc_transfer(ctx, member: discord.Member):
-    vc = await get_user_vc(ctx)
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
-    try:
-        await vc.set_permissions(ctx.author, connect=True, manage_channels=False)
-        await vc.set_permissions(member, connect=True, manage_channels=True)
-        await ctx.send(f"{SUCCESS} VC ownership transferred to {member.name}!")
-    except:
-        await ctx.send(f"{FAIL} Could not transfer VC ownership.")
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
+    await vc.set_permissions(member, connect=True, manage_channels=True)
+    await vc.set_permissions(ctx.author, manage_channels=False)
+    await ctx.send(f"{SUCCESS} Ownership transferred to {member.display_name}.")
 
-@bot.command(name="vc unmute")
+@bot.command()
 async def vc_unmute(ctx):
-    vc = await get_user_vc(ctx)
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
-    for mem in vc.members:
-        await mem.edit(mute=False)
-    await ctx.send(f"{SUCCESS} All members unmuted!")
+        return await ctx.send(f"{FAIL} You are not in a voice channel.")
+    for m in vc.members:
+        await m.edit(mute=False)
+    await ctx.send(f"{SUCCESS} Everyone unmuted in {vc.name}.")
 
 # ---------- FLASK KEEPALIVE ----------
 app = Flask("")
