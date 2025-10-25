@@ -67,11 +67,12 @@ async def vmsetup(ctx):
             "unmute_category": unmute_category.id
         }
 
-        await ctx.send(f"{SUCCESS} VM system successfully set up!")
+        embed = discord.Embed(title="VM System", description=f"{SUCCESS} VM system successfully set up!", color=discord.Color.green())
+        await ctx.send(embed=embed)
 
     except Exception as e:
-        await ctx.send(f"{FAIL} Failed to set up VM system.\nError: {e}")
-
+        embed = discord.Embed(title="VM System Error", description=f"{FAIL} Failed to set up VM system.\nError: {e}", color=discord.Color.red())
+        await ctx.send(embed=embed)
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -82,7 +83,6 @@ async def vmreset(ctx):
             await ctx.send(f"{FAIL} VM system is not set up in this server.")
             return
 
-        # Remove all categories and their channels
         setup = server_setup[guild.id]
         for cat_id in setup.values():
             category = get(guild.categories, id=cat_id)
@@ -92,24 +92,20 @@ async def vmreset(ctx):
                 await category.delete()
 
         server_setup.pop(guild.id)
-        await ctx.send(f"{SUCCESS} VM system has been reset.")
+        embed = discord.Embed(title="VM System", description=f"{SUCCESS} VM system has been reset.", color=discord.Color.green())
+        await ctx.send(embed=embed)
 
     except Exception as e:
-        await ctx.send(f"{FAIL} Failed to reset VM system.\nError: {e}")
-
+        embed = discord.Embed(title="VM System Error", description=f"{FAIL} Failed to reset VM system.\nError: {e}", color=discord.Color.red())
+        await ctx.send(embed=embed)
 
 @bot.command()
 async def vmcommands(ctx):
-    embed = discord.Embed(title="VM Commands", color=discord.Color.blue())
+    embed = discord.Embed(title="VM Master Commands", color=discord.Color.blue())
     embed.add_field(name=".vm setup", value="Setup VM system (Admin only)", inline=False)
     embed.add_field(name=".vm reset", value="Reset VM system (Admin only)", inline=False)
-    embed.add_field(
-        name="VC Management Commands",
-        value=".vc lock  |  .vc unlock  |  .vc kick  |  .vc ban  |  .vc permit  |  .vc limit  |  .vc rename  |  .vc transfer  |  .vc unmute",
-        inline=False
-    )
+    embed.add_field(name="VC Master", value="Join Public/Private VC to create your own temporary VC", inline=False)
     await ctx.send(embed=embed)
-
 
 # ---------- JOIN TO CREATE HANDLER ----------
 @bot.event
@@ -129,31 +125,30 @@ async def on_voice_state_update(member, before, after):
         if after.channel.name == CREATE_PUBLIC_VC:
             category = get(guild.categories, id=setup["public_category"])
             vc_name = f"{member.name}'s Public VC"
-            perms = None
+            perms = None  # No special overwrites
         else:
             category = get(guild.categories, id=setup["private_category"])
             vc_name = f"{member.name}'s Private VC"
-            perms = {
-                guild.default_role: discord.PermissionOverwrite(connect=False),
-                member: discord.PermissionOverwrite(connect=True)
-            }
+            perms = {guild.default_role: discord.PermissionOverwrite(connect=False),
+                     member: discord.PermissionOverwrite(connect=True)}
 
         # Create temp VC
-        temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
+        if perms:
+            temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
+        else:
+            temp_vc = await guild.create_voice_channel(vc_name, category=category)
 
-        # Move member
         await member.move_to(temp_vc)
 
         # Delete VC when empty
-        async def delete_when_empty():
+        async def delete_when_empty(vc):
             while True:
                 await asyncio.sleep(10)
-                if len(temp_vc.members) == 0:
-                    await temp_vc.delete()
+                if len(vc.members) == 0:
+                    await vc.delete()
                     break
 
-        bot.loop.create_task(delete_when_empty())
-
+        bot.loop.create_task(delete_when_empty(temp_vc))
 
 # ---------- FLASK KEEPALIVE ----------
 app = Flask("")
