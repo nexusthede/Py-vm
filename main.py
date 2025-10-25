@@ -1,14 +1,16 @@
-# main.py
+import os
 import discord
-from discord.ext import commands
-from discord import app_commands, ui
-import asyncio
+from discord.ext import commands, tasks
+from discord import app_commands
+from discord.ui import Button, View
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
+GUILD_ID = int(os.getenv("GUILD_ID"))
+GUILD = None
 
-# ========== Emoji Constants ==========
-EMOJIS = {
+# Emoji mapping
+VC_EMOJIS = {
     "lock": "<:lockv:1431214489981812778>",
     "unlock": "<:unlockv:1431214488316674128>",
     "kick": "<:kickv:1431213595986755725>",
@@ -17,98 +19,109 @@ EMOJIS = {
     "limit": "<:limitv:1431213601787744367>",
     "reset": "<:resetv:1431213603536506890>",
     "info": "<:infov:1431213604895719565>",
-    "edit": "<:editv:1431213607814828113>",
-    "transfer": "<:transferv:1431213610348183582>"
+    "rename": "<:editv:1431213607814828113>",
+    "transfer": "<:transferv:1431213610348183582>",
+    "dash": "<:dashv:1431213611858002010>"
 }
 
-# ========== VC Buttons ==========
-class VCButtons(ui.View):
-    def __init__(self, vc):
+# Helper for embed creation
+def create_embed(title: str, description: str):
+    return discord.Embed(title=title, description=description, color=discord.Color.blue())
+
+# Button setup for VC control
+class VCControlView(View):
+    def __init__(self, member_vc):
         super().__init__(timeout=None)
-        self.vc = vc
+        self.member_vc = member_vc
 
-        # Adding each emoji button
-        self.add_item(ui.Button(emoji=EMOJIS["lock"], style=discord.ButtonStyle.grey, custom_id="vc_lock"))
-        self.add_item(ui.Button(emoji=EMOJIS["unlock"], style=discord.ButtonStyle.grey, custom_id="vc_unlock"))
-        self.add_item(ui.Button(emoji=EMOJIS["kick"], style=discord.ButtonStyle.grey, custom_id="vc_kick"))
-        self.add_item(ui.Button(emoji=EMOJIS["ban"], style=discord.ButtonStyle.grey, custom_id="vc_ban"))
-        self.add_item(ui.Button(emoji=EMOJIS["permit"], style=discord.ButtonStyle.grey, custom_id="vc_permit"))
-        self.add_item(ui.Button(emoji=EMOJIS["limit"], style=discord.ButtonStyle.grey, custom_id="vc_limit"))
-        self.add_item(ui.Button(emoji=EMOJIS["reset"], style=discord.ButtonStyle.grey, custom_id="vc_reset"))
-        self.add_item(ui.Button(emoji=EMOJIS["info"], style=discord.ButtonStyle.grey, custom_id="vc_info"))
-        self.add_item(ui.Button(emoji=EMOJIS["edit"], style=discord.ButtonStyle.grey, custom_id="vc_rename"))
-        self.add_item(ui.Button(emoji=EMOJIS["transfer"], style=discord.ButtonStyle.grey, custom_id="vc_transfer"))
+        for action in ["lock", "unlock", "kick", "ban", "permit", "limit", "reset", "info", "rename", "transfer"]:
+            self.add_item(Button(emoji=VC_EMOJIS[action], style=discord.ButtonStyle.gray, custom_id=f"vc_{action}"))
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Ensure only VC owner can use buttons
-        if interaction.user.id != self.vc.owner_id:
-            await interaction.response.send_message("You are not the VC owner!", ephemeral=True)
-            return False
-        return True
+    async def interaction_check(self, interaction: discord.Interaction):
+        return interaction.user.voice and interaction.user.voice.channel == self.member_vc
 
-    @ui.button(custom_id="vc_lock")
-    async def lock(self, interaction: discord.Interaction, button: ui.Button):
-        await self.vc.edit(user_limit=0)
-        embed = discord.Embed(description=f"{EMOJIS['lock']} VC locked.", color=discord.Color.blue())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @ui.button(custom_id="vc_unlock")
-    async def unlock(self, interaction: discord.Interaction, button: ui.Button):
-        await self.vc.edit(user_limit=None)
-        embed = discord.Embed(description=f"{EMOJIS['unlock']} VC unlocked.", color=discord.Color.blue())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # Add other buttons similarly: kick, ban, permit, limit, reset, info, rename, transfer
-    # Each should send a blue embed confirmation
-
-# ========== VM Setup Command ==========
-@bot.tree.command(name="vm_setup", description="Setup all VC categories and interface")
-async def vm_setup(interaction: discord.Interaction):
-    guild = interaction.guild
-
-    # Check if already exists
-    existing_categories = {c.name: c for c in guild.categories}
-    
+# Setup categories and interface
+async def setup_categories_and_interface(guild: discord.Guild):
     # 1️⃣ Unmute Category
-    if "Unmute" not in existing_categories:
-        unmute_cat = await guild.create_category("Unmute")
-        await guild.create_voice_channel("Unmute 1", category=unmute_cat)
-        await guild.create_voice_channel("Unmute 2", category=unmute_cat)
+    unmute_category = discord.utils.get(guild.categories, name="Unmute")
+    if not unmute_category:
+        unmute_category = await guild.create_category("Unmute")
+        await guild.create_voice_channel("Unmute 1", category=unmute_category)
+        await guild.create_voice_channel("Unmute 2", category=unmute_category)
 
     # 2️⃣ Join-to-Create Category
-    if "Join-to-Create" not in existing_categories:
-        create_cat = await guild.create_category("Join-to-Create")
-        await guild.create_voice_channel("Create Public VC", category=create_cat)
-        await guild.create_voice_channel("Create Private VC", category=create_cat)
-        await guild.create_voice_channel("Join a Random VC", category=create_cat)
+    join_category = discord.utils.get(guild.categories, name="Join-to-Create")
+    if not join_category:
+        join_category = await guild.create_category("Join-to-Create")
+        public_vc = await guild.create_voice_channel("Create Public VC", category=join_category)
+        private_vc = await guild.create_voice_channel("Create Private VC", category=join_category)
+        random_vc = await guild.create_voice_channel("Join a Random VC", category=join_category)
 
-        # Add interface message in text channel
-        interface_channel = await guild.create_text_channel("vc-interface")
-        embed = discord.Embed(title="VC Interface", description="Use the buttons below to control your VC", color=discord.Color.blue())
-        await interface_channel.send(embed=embed, view=VCButtons(None))  # VC set dynamically when used
+        # Send interface message with buttons
+        view = View()
+        for emoji in ["🔒", "🔓", "🎛️"]:  # Example emojis for join/create
+            view.add_item(Button(emoji=emoji, style=discord.ButtonStyle.gray))
+        channel = guild.text_channels[0]  # Replace with your interface text channel
+        await channel.send(embed=create_embed("Join-to-Create VC", "Press a button to create or join a VC"), view=view)
 
-    await interaction.response.send_message("VM setup completed.", ephemeral=True)
+# Prefix command
+@bot.command()
+async def vm(ctx):
+    await ctx.send(embed=create_embed("VM", "Use `/vm_setup` or buttons in the interface."))
 
-# ========== Event to Handle Join-to-Create Logic ==========
+# Slash command
+@bot.tree.command(name="vm_setup")
+async def slash_vm_setup(interaction: discord.Interaction):
+    await interaction.response.send_message("Setting up VC system...", ephemeral=True)
+    await setup_categories_and_interface(GUILD)
+    await interaction.followup.send(embed=create_embed("Setup Complete", "VC categories and interface created successfully."), ephemeral=True)
+
+# Button interaction
 @bot.event
-async def on_voice_state_update(member, before, after):
-    guild = member.guild
-    if after.channel:
-        # Handle Public VC temp deletion
-        if after.channel.name == "Create Public VC":
-            new_vc = await guild.create_voice_channel(f"{member.display_name}'s Public VC", category=after.channel.category)
-            await member.move_to(new_vc)
-        # Handle Private VC temp deletion
-        elif after.channel.name == "Create Private VC":
-            new_vc = await guild.create_voice_channel(f"{member.display_name}'s Private VC", category=after.channel.category)
-            await member.move_to(new_vc)
-            await new_vc.set_permissions(member, connect=True, manage_channels=True)
+async def on_interaction(interaction: discord.Interaction):
+    if not interaction.data.get("custom_id"):
+        return
+    cid = interaction.data["custom_id"]
+    if cid.startswith("vc_"):
+        action = cid[3:]
+        vc = interaction.user.voice.channel
+        if not vc:
+            await interaction.response.send_message("You are not in a VC!", ephemeral=True)
+            return
+        if action == "lock":
+            await vc.set_permissions(interaction.guild.default_role, connect=False)
+            await interaction.response.send_message("VC locked 🔒", ephemeral=True)
+        elif action == "unlock":
+            await vc.set_permissions(interaction.guild.default_role, connect=True)
+            await interaction.response.send_message("VC unlocked 🔓", ephemeral=True)
+        elif action == "kick":
+            # This requires selecting member
+            await interaction.response.send_message("Kick action pressed.", ephemeral=True)
+        elif action == "ban":
+            await interaction.response.send_message("Ban action pressed.", ephemeral=True)
+        elif action == "permit":
+            await interaction.response.send_message("Permit action pressed.", ephemeral=True)
+        elif action == "limit":
+            await interaction.response.send_message("Limit action pressed.", ephemeral=True)
+        elif action == "reset":
+            await interaction.response.send_message("Reset action pressed.", ephemeral=True)
+        elif action == "info":
+            await interaction.response.send_message(f"VC Info: {vc.name}", ephemeral=True)
+        elif action == "rename":
+            await interaction.response.send_message("Rename action pressed.", ephemeral=True)
+        elif action == "transfer":
+            await interaction.response.send_message("Transfer action pressed.", ephemeral=True)
 
-        # Join a Random VC logic
-        elif after.channel.name == "Join a Random VC":
-            random_vcs = [c for c in after.channel.category.voice_channels if c.name not in ["Create Public VC","Create Private VC","Join a Random VC"]]
-            if random_vcs:
-                await member.move_to(random.choice(random_vcs))
+# Ready event
+@bot.event
+async def on_ready():
+    global GUILD
+    GUILD = bot.get_guild(GUILD_ID)
+    print(f"Logged in as {bot.user}")
+    try:
+        await bot.tree.sync(guild=GUILD)
+        print("Slash commands synced.")
+    except Exception as e:
+        print(e)
 
-# Run Bot
-bot.run("TOKEN")
+bot.run(os.getenv("TOKEN"))
