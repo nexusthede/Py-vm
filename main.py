@@ -4,22 +4,25 @@ from discord.ext import commands, tasks
 from discord.utils import get
 from flask import Flask
 import threading
+import asyncio
 
 TOKEN = os.getenv("TOKEN")
 
+# ---------- INTENTS ----------
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 intents.voice_states = True
 intents.messages = True
+intents.message_content = True  # Needed for prefix commands
 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# Custom Emojis
+# ---------- CUSTOM EMOJIS ----------
 SUCCESS = "<:check_markv:1431619384987615383>"
 FAIL = "<:x_markv:1431619387168657479>"
 
-# Category & VC Names
+# ---------- CATEGORY & VC NAMES ----------
 JOIN_CREATE_CATEGORY = "Join to Create"
 PUBLIC_CATEGORY = "Public VCs"
 PRIVATE_CATEGORY = "Private VCs"
@@ -30,7 +33,7 @@ CREATE_PRIVATE_VC = "Create Private VC"
 
 UNMUTE_VCS = ["Unmute VC 1", "Unmute VC 2"]
 
-# Keep track of server setup
+# ---------- SERVER SETUP TRACKING ----------
 server_setup = {}
 
 # ---------- BOT COMMANDS ----------
@@ -40,7 +43,6 @@ server_setup = {}
 async def vmsetup(ctx):
     guild = ctx.guild
     try:
-        # Check if already setup
         if guild.id in server_setup:
             await ctx.send(f"{FAIL} VM system already set up for this server.")
             return
@@ -82,7 +84,7 @@ async def vmreset(ctx):
             await ctx.send(f"{FAIL} VM system is not set up in this server.")
             return
 
-        # Remove all categories and their channels
+        # Delete all categories and their channels
         setup = server_setup[guild.id]
         for cat_id in setup.values():
             category = get(guild.categories, id=cat_id)
@@ -108,6 +110,7 @@ async def vmcommands(ctx):
 
 
 # ---------- JOIN TO CREATE HANDLER ----------
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot:
@@ -121,49 +124,53 @@ async def on_voice_state_update(member, before, after):
     join_category = get(guild.categories, id=setup["join_category"])
 
     if after.channel and after.channel.category == join_category:
-        # Determine type
+
+        # Determine VC type
         if after.channel.name == CREATE_PUBLIC_VC:
             category = get(guild.categories, id=setup["public_category"])
             vc_name = f"{member.name}'s Public VC"
+            perms = None  # Everyone can join
+
         else:
             category = get(guild.categories, id=setup["private_category"])
             vc_name = f"{member.name}'s Private VC"
+            perms = {
+                guild.default_role: discord.PermissionOverwrite(connect=False),
+                member: discord.PermissionOverwrite(connect=True)
+            }
 
         # Create temp VC
-        temp_vc = await guild.create_voice_channel(vc_name, category=category)
+        temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
         await member.move_to(temp_vc)
 
-        # Optional: Set permissions for private VC
-        if category.id == setup["private_category"]:
-            await temp_vc.set_permissions(guild.default_role, connect=False)
-            await temp_vc.set_permissions(member, connect=True)
-
         # Delete VC when empty
-        def check_empty(vc):
-            return len(vc.members) == 0
-
         async def delete_when_empty():
             while True:
-                await discord.utils.sleep_until(discord.utils.utcnow() + discord.timedelta(seconds=10))
-                if check_empty(temp_vc):
+                await asyncio.sleep(10)
+                if len(temp_vc.members) == 0:
                     await temp_vc.delete()
                     break
 
         bot.loop.create_task(delete_when_empty())
 
+
 # ---------- FLASK KEEPALIVE ----------
+
 app = Flask("")
 
 @app.route("/")
 def home():
     return "Bot is running!"
 
+
 def run():
     app.run(host="0.0.0.0", port=8080)
+
 
 def keep_alive():
     t = threading.Thread(target=run)
     t.start()
+
 
 keep_alive()
 bot.run(TOKEN)
