@@ -21,7 +21,7 @@ bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 SUCCESS = "<:check_markv:1431619384987615383>"
 FAIL = "<:x_markv:1431619387168657479>"
 
-# Category & VC Names
+# Categories & VC Names
 JOIN_CREATE_CATEGORY = "Join to Create"
 PUBLIC_CATEGORY = "Public VCs"
 PRIVATE_CATEGORY = "Private VCs"
@@ -32,9 +32,9 @@ CREATE_PRIVATE_VC = "Create Private VC"
 
 UNMUTE_VCS = ["Unmute VC 1", "Unmute VC 2"]
 
-# Track server setup and VC owners
+# Track server setup
 server_setup = {}
-vc_owners = {}
+temp_vcs = {}  # Track temporary VCs per user
 
 # ---------- BOT EVENTS ----------
 @bot.event
@@ -48,7 +48,8 @@ async def vmsetup(ctx):
     guild = ctx.guild
     try:
         if guild.id in server_setup:
-            await ctx.send(embed=discord.Embed(description=f"{FAIL} VM system already set up for this server.", color=discord.Color.red()))
+            embed = discord.Embed(description=f"{FAIL} VM system already set up for this server.", color=discord.Color.red())
+            await ctx.send(embed=embed)
             return
 
         # Create categories
@@ -61,9 +62,11 @@ async def vmsetup(ctx):
         await guild.create_voice_channel(CREATE_PUBLIC_VC, category=join_category)
         await guild.create_voice_channel(CREATE_PRIVATE_VC, category=join_category)
 
-        # Create unmute VCs
+        # Create unmute VCs (avoid duplicates)
         for vc_name in UNMUTE_VCS:
-            await guild.create_voice_channel(vc_name, category=unmute_category)
+            existing = discord.utils.get(unmute_category.channels, name=vc_name)
+            if not existing:
+                await guild.create_voice_channel(vc_name, category=unmute_category)
 
         # Save setup
         server_setup[guild.id] = {
@@ -73,10 +76,12 @@ async def vmsetup(ctx):
             "unmute_category": unmute_category.id
         }
 
-        await ctx.send(embed=discord.Embed(description=f"{SUCCESS} VM system successfully set up!", color=discord.Color.green()))
+        embed = discord.Embed(description=f"{SUCCESS} VM system successfully set up!", color=discord.Color.green())
+        await ctx.send(embed=embed)
 
     except Exception as e:
-        await ctx.send(embed=discord.Embed(description=f"{FAIL} Failed to set up VM system.\nError: {e}", color=discord.Color.red()))
+        embed = discord.Embed(description=f"{FAIL} Failed to set up VM system.\nError: {e}", color=discord.Color.red())
+        await ctx.send(embed=embed)
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -84,7 +89,8 @@ async def vmreset(ctx):
     guild = ctx.guild
     try:
         if guild.id not in server_setup:
-            await ctx.send(embed=discord.Embed(description=f"{FAIL} VM system is not set up in this server.", color=discord.Color.red()))
+            embed = discord.Embed(description=f"{FAIL} VM system is not set up in this server.", color=discord.Color.red())
+            await ctx.send(embed=embed)
             return
 
         setup = server_setup[guild.id]
@@ -92,21 +98,29 @@ async def vmreset(ctx):
             category = get(guild.categories, id=cat_id)
             if category:
                 for ch in category.channels:
-                    await ch.delete()
-                await category.delete()
+                    try:
+                        await ch.delete()
+                    except:
+                        pass
+                try:
+                    await category.delete()
+                except:
+                    pass
 
         server_setup.pop(guild.id)
-        await ctx.send(embed=discord.Embed(description=f"{SUCCESS} VM system has been reset.", color=discord.Color.green()))
+        embed = discord.Embed(description=f"{SUCCESS} VM system has been reset.", color=discord.Color.green())
+        await ctx.send(embed=embed)
 
     except Exception as e:
-        await ctx.send(embed=discord.Embed(description=f"{FAIL} Failed to reset VM system.\nError: {e}", color=discord.Color.red()))
+        embed = discord.Embed(description=f"{FAIL} Failed to reset VM system.\nError: {e}", color=discord.Color.red())
+        await ctx.send(embed=embed)
 
 @bot.command()
 async def vmcommands(ctx):
     embed = discord.Embed(title="VM Master Commands", color=discord.Color.blue())
     embed.add_field(name=".vmsetup", value="Setup VM system (Admin only)", inline=False)
     embed.add_field(name=".vmreset", value="Reset VM system (Admin only)", inline=False)
-    embed.add_field(name="VC Master", value="Join Public/Private VC to create your own temporary VC", inline=False)
+    embed.add_field(name=".vc", value="Use VC subcommands: lock/unlock/kick/ban/permit/limit/rename/transfer/unmute", inline=False)
     await ctx.send(embed=embed)
 
 # ---------- JOIN TO CREATE HANDLER ----------
@@ -123,6 +137,9 @@ async def on_voice_state_update(member, before, after):
     join_category = get(guild.categories, id=setup["join_category"])
 
     if after.channel and after.channel.category == join_category:
+        if member.id in temp_vcs:
+            return  # User already has a temp VC
+
         if after.channel.name == CREATE_PUBLIC_VC:
             category = get(guild.categories, id=setup["public_category"])
             vc_name = f"{member.display_name}'s channel"
@@ -130,25 +147,23 @@ async def on_voice_state_update(member, before, after):
         else:
             category = get(guild.categories, id=setup["private_category"])
             vc_name = f"{member.display_name}'s channel"
-            perms = {
-                guild.default_role: discord.PermissionOverwrite(connect=False),
-                member: discord.PermissionOverwrite(connect=True)
-            }
+            perms = {guild.default_role: discord.PermissionOverwrite(connect=False),
+                     member: discord.PermissionOverwrite(connect=True)}
 
-        if perms:
-            temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
-        else:
-            temp_vc = await guild.create_voice_channel(vc_name, category=category)
-
+        temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
+        temp_vcs[member.id] = temp_vc.id
         await member.move_to(temp_vc)
-        vc_owners[temp_vc.id] = member.id
 
         async def delete_when_empty(vc):
             while True:
                 await asyncio.sleep(10)
-                if len(vc.members) == 0 and vc.id not in [get(guild.channels, id=id).id for id in UNMUTE_VCS if get(guild.channels, id=id)]:
-                    vc_owners.pop(vc.id, None)
-                    await vc.delete()
+                try:
+                    if len(vc.members) == 0:
+                        await vc.delete()
+                        temp_vcs.pop(member.id, None)
+                        break
+                except discord.errors.NotFound:
+                    temp_vcs.pop(member.id, None)
                     break
 
         bot.loop.create_task(delete_when_empty(temp_vc))
@@ -159,95 +174,108 @@ async def get_member_vc(member):
         return member.voice.channel
     return None
 
-async def is_vc_owner(ctx):
+@bot.group()
+async def vc(ctx):
+    if ctx.invoked_subcommand is None:
+        embed = discord.Embed(description=f"{FAIL} Invalid VC command. Use `.vc lock/unlock/kick/ban/permit/limit/rename/transfer/unmute`", color=discord.Color.red())
+        await ctx.send(embed=embed)
+
+@vc.command()
+async def lock(ctx):
     vc = await get_member_vc(ctx.author)
     if not vc:
-        await ctx.send(embed=discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red()))
-        return None
-    if vc_owners.get(vc.id) != ctx.author.id:
-        await ctx.send(embed=discord.Embed(description=f"{FAIL} Only the VC owner can use this command.", color=discord.Color.red()))
-        return None
-    return vc
-
-@bot.command()
-async def vc_lock(ctx):
-    vc = await is_vc_owner(ctx)
-    if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     await vc.set_permissions(ctx.guild.default_role, connect=False)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} {vc.name} locked.", color=discord.Color.green()))
+    embed = discord.Embed(description=f"{SUCCESS} {vc.name} locked.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def vc_unlock(ctx):
-    vc = await is_vc_owner(ctx)
+@vc.command()
+async def unlock(ctx):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     await vc.set_permissions(ctx.guild.default_role, connect=True)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} {vc.name} unlocked.", color=discord.Color.green()))
+    embed = discord.Embed(description=f"{SUCCESS} {vc.name} unlocked.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def vc_kick(ctx, member: discord.Member):
-    vc = await is_vc_owner(ctx)
+@vc.command()
+async def kick(ctx, member: discord.Member):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     if member in vc.members:
         await member.move_to(None)
-        await ctx.send(embed=discord.Embed(description=f"{SUCCESS} {member.display_name} kicked from {vc.name}.", color=discord.Color.green()))
+        embed = discord.Embed(description=f"{SUCCESS} {member.display_name} kicked from {vc.name}.", color=discord.Color.green())
     else:
-        await ctx.send(embed=discord.Embed(description=f"{FAIL} {member.display_name} is not in your VC.", color=discord.Color.red()))
+        embed = discord.Embed(description=f"{FAIL} {member.display_name} is not in your VC.", color=discord.Color.red())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def vc_ban(ctx, member: discord.Member):
-    vc = await is_vc_owner(ctx)
+@vc.command()
+async def ban(ctx, member: discord.Member):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     await vc.set_permissions(member, connect=False)
     if member in vc.members:
         await member.move_to(None)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} {member.display_name} banned from {vc.name}.", color=discord.Color.green()))
+    embed = discord.Embed(description=f"{SUCCESS} {member.display_name} banned from {vc.name}.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def vc_permit(ctx, member: discord.Member):
-    vc = await is_vc_owner(ctx)
+@vc.command()
+async def permit(ctx, member: discord.Member):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     await vc.set_permissions(member, connect=True)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} {member.display_name} can now join {vc.name}.", color=discord.Color.green()))
+    embed = discord.Embed(description=f"{SUCCESS} {member.display_name} can now join {vc.name}.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def vc_limit(ctx, limit: int):
-    vc = await is_vc_owner(ctx)
+@vc.command()
+async def limit(ctx, limit: int):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     await vc.edit(user_limit=limit)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} {vc.name} limit set to {limit}.", color=discord.Color.green()))
+    embed = discord.Embed(description=f"{SUCCESS} {vc.name} limit set to {limit}.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def vc_rename(ctx, *, name: str):
-    vc = await is_vc_owner(ctx)
+@vc.command()
+async def rename(ctx, *, name: str):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     await vc.edit(name=name)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} VC renamed to {name}.", color=discord.Color.green()))
+    embed = discord.Embed(description=f"{SUCCESS} VC renamed to {name}.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def vc_transfer(ctx, member: discord.Member):
-    vc = await is_vc_owner(ctx)
+@vc.command()
+async def transfer(ctx, member: discord.Member):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     await vc.set_permissions(member, connect=True, manage_channels=True)
     await vc.set_permissions(ctx.author, manage_channels=False)
-    vc_owners[vc.id] = member.id
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} Ownership transferred to {member.display_name}.", color=discord.Color.green()))
+    embed = discord.Embed(description=f"{SUCCESS} Ownership transferred to {member.display_name}.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def vc_unmute(ctx):
-    vc = await is_vc_owner(ctx)
+@vc.command()
+async def unmute(ctx):
+    vc = await get_member_vc(ctx.author)
     if not vc:
-        return
+        embed = discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red())
+        return await ctx.send(embed=embed)
     for m in vc.members:
         await m.edit(mute=False)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} Everyone unmuted in {vc.name}.", color=discord.Color.green()))
+    embed = discord.Embed(description=f"{SUCCESS} Everyone unmuted in {vc.name}.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
 # ---------- FLASK KEEPALIVE ----------
 app = Flask("")
