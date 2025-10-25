@@ -136,49 +136,42 @@ async def on_voice_state_update(member, before, after):
 
     setup = server_setup[guild.id]
     join_category = get(guild.categories, id=setup["join_category"])
-    if not after.channel or after.channel.category != join_category:
-        return
 
-    # Check if user already has a temp VC
-    if member.id in temp_vcs:
-        return
+    if after.channel and after.channel.category == join_category:
+        if member.id in temp_vcs:
+            return  # User already has a temp VC
 
-    # Determine VC type
-    is_public = after.channel.name.lower() == CREATE_PUBLIC_VC.lower()
-    is_private = after.channel.name.lower() == CREATE_PRIVATE_VC.lower()
-    if not is_public and not is_private:
-        return  # Not a join-to-create VC
+        # Determine VC type and category
+        if after.channel.name == CREATE_PUBLIC_VC:
+            category = get(guild.categories, id=setup["public_category"])
+            # Public VC: anyone can join
+            perms = {guild.default_role: discord.PermissionOverwrite(connect=True)}
+        elif after.channel.name == CREATE_PRIVATE_VC:
+            category = get(guild.categories, id=setup["private_category"])
+            perms = {guild.default_role: discord.PermissionOverwrite(connect=False),
+                     member: discord.PermissionOverwrite(connect=True)}
+        else:
+            return  # Not a join-to-create VC
 
-    # Select category and permissions
-    if is_public:
-        category = get(guild.categories, id=setup["public_category"])
-        perms = None  # Public VC
-    else:
-        category = get(guild.categories, id=setup["private_category"])
-        perms = {
-            guild.default_role: discord.PermissionOverwrite(connect=False),
-            member: discord.PermissionOverwrite(connect=True)
-        }
+        vc_name = f"{member.display_name}'s channel"
+        temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
+        temp_vcs[member.id] = temp_vc.id
+        await member.move_to(temp_vc)
 
-    vc_name = f"{member.display_name}'s channel"
-    temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
-    temp_vcs[member.id] = temp_vc.id
-    await member.move_to(temp_vc)
-
-    # Delete VC when empty
-    async def delete_when_empty(vc, member_id):
-        while True:
-            await asyncio.sleep(10)
-            try:
-                if len(vc.members) == 0:
-                    await vc.delete()
+        # Delete VC when empty
+        async def delete_when_empty(vc, member_id):
+            while True:
+                await asyncio.sleep(10)
+                try:
+                    if len(vc.members) == 0:
+                        await vc.delete()
+                        temp_vcs.pop(member_id, None)
+                        break
+                except discord.errors.NotFound:
                     temp_vcs.pop(member_id, None)
                     break
-            except discord.errors.NotFound:
-                temp_vcs.pop(member_id, None)
-                break
 
-    bot.loop.create_task(delete_when_empty(temp_vc, member.id))
+        bot.loop.create_task(delete_when_empty(temp_vc, member.id))
 
 # ---------- VC MASTER COMMANDS ----------
 async def get_member_vc(member):
