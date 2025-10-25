@@ -10,8 +10,9 @@ TOKEN = os.environ.get("TOKEN")
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='.', intents=intents)
+tree = bot.tree
 
-# --- Load or create data.json ---
+# Load data.json
 if not os.path.exists("data.json"):
     with open("data.json", "w") as f:
         json.dump({"servers": {}}, f, indent=4)
@@ -44,16 +45,30 @@ def register_server(guild):
         }
         save_data()
 
+async def create_join_channels(guild):
+    guild_data = data["servers"][str(guild.id)]
+    join_cat = discord.utils.get(guild.categories, name=guild_data["join_to_create_category"])
+    # Create 3 join channels
+    for i in range(1, 4):
+        name = f"Join-{i}"
+        if not discord.utils.get(guild.voice_channels, name=name, category=join_cat):
+            await guild.create_voice_channel(name, category=join_cat)
+
 # --- Events ---
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
     print(f"Logged in as {bot.user}")
+    try:
+        synced = await tree.sync()
+        print(f"Synced {len(synced)} commands")
+    except Exception as e:
+        print(e)
 
 @bot.event
 async def on_guild_join(guild):
     register_server(guild)
     await create_vc_categories(guild)
+    await create_join_channels(guild)
 
 # --- Join-to-create VC ---
 @bot.event
@@ -65,16 +80,15 @@ async def on_voice_state_update(member, before, after):
     register_server(member.guild)
     guild_data = data["servers"][guild_id]
 
-    # --- Handle join-to-create channels ---
+    # Join-to-create
     join_cat = discord.utils.get(member.guild.categories, name=guild_data["join_to_create_category"])
     if after.channel and after.channel.category == join_cat:
-        # Only create VC if user joined a join-to-create channel
-        vc_type = "public" if after.channel.name.lower() == "public" else "private"
+        # Determine type (public/private)
+        vc_type = "public" if after.channel.name.lower().startswith("join") else "private"
         target_cat = discord.utils.get(member.guild.categories, name=guild_data[f"{vc_type}_category"])
         new_vc = await member.guild.create_voice_channel(f"{member.name}'s VC", category=target_cat)
         await member.move_to(new_vc)
 
-        # Save VC info
         guild_data["vcs"][str(new_vc.id)] = {
             "owner": member.id,
             "type": vc_type,
@@ -83,7 +97,7 @@ async def on_voice_state_update(member, before, after):
         }
         save_data()
 
-    # --- Handle unmute VC ---
+    # Handle unmute VC
     unmute_cat = discord.utils.get(member.guild.categories, name=guild_data["unmute_category"])
     if after.channel and after.channel.category == unmute_cat:
         original_vc_id = None
@@ -96,23 +110,12 @@ async def on_voice_state_update(member, before, after):
                 await member.move_to(original_vc)
 
 # --- VM Setup / Reset ---
-@bot.command()
-async def vm(ctx, action=None):
-    guild_id = str(ctx.guild.id)
-    register_server(ctx.guild)
-    guild_data = data["servers"][guild_id]
-
+@bot.command(name="vm")
+async def vm_command(ctx, action=None):
     if action == "setup":
-        categories = await create_vc_categories(ctx.guild)
-
-        # Create 3 join-to-create channels inside JOIN-TO-CREATE
-        existing_jtcs = [ch.name for ch in categories["JOIN-TO-CREATE"].channels]
-        for i in range(1, 4):
-            name = f"Join-{i}"
-            if name not in existing_jtcs:
-                await ctx.guild.create_voice_channel(name, category=categories["JOIN-TO-CREATE"])
-
-        # Send interface embed
+        register_server(ctx.guild)
+        await create_vc_categories(ctx.guild)
+        await create_join_channels(ctx.guild)
         embed = discord.Embed(
             title="**EDIT YOUR VC BY USING THE BUTTONS BELOW:**",
             description=(
@@ -127,38 +130,25 @@ async def vm(ctx, action=None):
                 "<:editv:1431213607814828113> `vc rename` <:dashv:1431213611858002010> Changes the VC name\n"
                 "<:transferv:1431213610348183582> `vc transfer` <:dashv:1431213611858002010> Transfers the VC ownership"
             ),
-            color=0x0000FF
+            color=0x3498DB
         )
         await ctx.send(embed=embed)
-        await ctx.send("<:checkv:1431397623193010257> VM setup completed!")
-
     elif action == "reset":
-        # Delete all VCs created by join-to-create
-        for vc_id in list(guild_data["vcs"].keys()):
-            vc = discord.utils.get(ctx.guild.voice_channels, id=int(vc_id))
-            if vc:
-                await vc.delete()
-            del guild_data["vcs"][vc_id]
+        guild_data = data["servers"][str(ctx.guild.id)]
+        guild_data["vcs"] = {}
         save_data()
-        await ctx.send("<:checkv:1431397623193010257> VM reset completed!")
+        await ctx.send("✅ VM data reset!")
 
-    else:
-        await ctx.send("<:failv:1431396982768930929> Invalid vm command!")
-
-# --- Slash VM Command ---
-@bot.tree.command(name="vm", description="Setup or reset VM system")
-@app_commands.choices(action=[
-    app_commands.Choice(name="setup", value="setup"),
-    app_commands.Choice(name="reset", value="reset")
-])
-async def vm_slash(interaction: discord.Interaction, action: app_commands.Choice[str]):
+# --- Slash Commands ---
+@tree.command(name="vm", description="Setup or reset VM system")
+@app_commands.describe(action="setup or reset")
+async def vm_slash(interaction: discord.Interaction, action: str):
     ctx = await bot.get_context(interaction)
-    await vm(ctx, action.value)
-    await interaction.response.send_message(f"<:checkv:1431397623193010257> VM {action.value} executed!", ephemeral=True)
+    await vm_command(ctx, action)
 
-# --- VC Commands (Prefix & Slash) ---
-@bot.command()
-async def vc(ctx, action=None, member: discord.Member=None, limit: int=None):
+# --- VC Command ---
+@bot.command(name="vc")
+async def vc_command(ctx, action=None, member: discord.Member=None, limit: int=None):
     guild_id = str(ctx.guild.id)
     register_server(ctx.guild)
     guild_data = data["servers"][guild_id]
@@ -167,8 +157,6 @@ async def vc(ctx, action=None, member: discord.Member=None, limit: int=None):
     if not user_vc or str(user_vc.id) not in guild_data["vcs"]:
         await ctx.send("<:failv:1431396982768930929> You must be in your VC!")
         return
-
-    vc_info = guild_data["vcs"][str(user_vc.id)]
 
     if action == "lock":
         await user_vc.set_permissions(ctx.guild.default_role, connect=False)
@@ -185,4 +173,22 @@ async def vc(ctx, action=None, member: discord.Member=None, limit: int=None):
     elif action == "permit" and member:
         await user_vc.set_permissions(member, connect=True)
         await ctx.send(f"<:checkv:1431397623193010257> Permitted {member.name}")
-    elif action == "limit"
+    elif action == "limit" and limit is not None:
+        await user_vc.edit(user_limit=limit)
+        guild_data["vcs"][str(user_vc.id)]["limit"] = limit
+        save_data()
+        await ctx.send(f"<:checkv:1431397623193010257> Limit set to {limit}")
+    elif action == "reset":
+        await user_vc.edit(user_limit=None)
+        await user_vc.set_permissions(ctx.guild.default_role, connect=True)
+        guild_data["vcs"][str(user_vc.id)]["limit"] = None
+        save_data()
+        await ctx.send("<:checkv:1431397623193010257> Reset VC!")
+    elif action == "info":
+        vc_info = guild_data["vcs"].get(str(user_vc.id))
+        await ctx.send(f"Owner: <@{vc_info['owner']}>\nType: {vc_info['type']}\nLimit: {vc_info['limit']}")
+    elif action == "rename" and member:
+        await user_vc.edit(name=str(member))
+        await ctx.send(f"<:checkv:1431397623193010257> Renamed VC to {member}")
+    elif action == "transfer" and member:
+        guild_data["vcs"][str(user
