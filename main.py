@@ -144,7 +144,7 @@ async def on_voice_state_update(member, before, after):
         # Determine VC type and category
         if after.channel.name == CREATE_PUBLIC_VC:
             category = get(guild.categories, id=setup["public_category"])
-            perms = None  # Public VC
+            perms = None  # public VC has no restrictions
         elif after.channel.name == CREATE_PRIVATE_VC:
             category = get(guild.categories, id=setup["private_category"])
             perms = {guild.default_role: discord.PermissionOverwrite(connect=False),
