@@ -32,9 +32,9 @@ CREATE_PRIVATE_VC = "Create Private VC"
 
 UNMUTE_VCS = ["Unmute VC 1", "Unmute VC 2"]
 
-# Track server setup and temp VCs
+# Track server setup
 server_setup = {}
-temp_vcs = {}  # {user_id: vc_id}
+temp_vcs = {}  # Track temporary VCs per user
 
 # ---------- BOT EVENTS ----------
 @bot.event
@@ -58,15 +58,14 @@ async def vmsetup(ctx):
         private_category = await guild.create_category(PRIVATE_CATEGORY)
         unmute_category = await guild.create_category(UNMUTE_CATEGORY)
 
-        # Create join-to-create VCs (avoid duplicates)
-        if not discord.utils.get(join_category.channels, name=CREATE_PUBLIC_VC):
-            await guild.create_voice_channel(CREATE_PUBLIC_VC, category=join_category)
-        if not discord.utils.get(join_category.channels, name=CREATE_PRIVATE_VC):
-            await guild.create_voice_channel(CREATE_PRIVATE_VC, category=join_category)
+        # Create join-to-create VCs
+        await guild.create_voice_channel(CREATE_PUBLIC_VC, category=join_category)
+        await guild.create_voice_channel(CREATE_PRIVATE_VC, category=join_category)
 
         # Create unmute VCs (avoid duplicates)
         for vc_name in UNMUTE_VCS:
-            if not discord.utils.get(unmute_category.channels, name=vc_name):
+            existing = discord.utils.get(unmute_category.channels, name=vc_name)
+            if not existing:
                 await guild.create_voice_channel(vc_name, category=unmute_category)
 
         # Save setup
@@ -138,37 +137,42 @@ async def on_voice_state_update(member, before, after):
     join_category = get(guild.categories, id=setup["join_category"])
 
     if after.channel and after.channel.category == join_category:
+        # Prevent multiple temp VCs per user
         if member.id in temp_vcs:
-            return  # User already has a temp VC
+            return
 
-        # Determine VC type and category
+        # Determine VC type
         if after.channel.name == CREATE_PUBLIC_VC:
             category = get(guild.categories, id=setup["public_category"])
-            perms = None  # Public VC
-        else:  # CREATE_PRIVATE_VC
+            vc_name = f"{member.display_name}'s channel"
+            perms = None
+        elif after.channel.name == CREATE_PRIVATE_VC:
             category = get(guild.categories, id=setup["private_category"])
+            vc_name = f"{member.display_name}'s channel"
             perms = {guild.default_role: discord.PermissionOverwrite(connect=False),
                      member: discord.PermissionOverwrite(connect=True)}
+        else:
+            return  # Not a join-to-create VC
 
-        vc_name = f"{member.display_name}'s channel"
+        # Create temp VC
         temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
         temp_vcs[member.id] = temp_vc.id
         await member.move_to(temp_vc)
 
-        # Delete VC when empty
-        async def delete_when_empty(vc, member_id):
+        # Auto-delete when empty
+        async def delete_when_empty(vc):
             while True:
                 await asyncio.sleep(10)
                 try:
                     if len(vc.members) == 0:
                         await vc.delete()
-                        temp_vcs.pop(member_id, None)
+                        temp_vcs.pop(member.id, None)
                         break
                 except discord.errors.NotFound:
-                    temp_vcs.pop(member_id, None)
+                    temp_vcs.pop(member.id, None)
                     break
 
-        bot.loop.create_task(delete_when_empty(temp_vc, member.id))
+        bot.loop.create_task(delete_when_empty(temp_vc))
 
 # ---------- VC MASTER COMMANDS ----------
 async def get_member_vc(member):
@@ -225,55 +229,4 @@ async def permit(ctx, member: discord.Member):
     if not vc:
         return await ctx.send(embed=discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red()))
     await vc.set_permissions(member, connect=True)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} {member.display_name} can now join {vc.name}.", color=discord.Color.green()))
-
-@vc.command()
-async def limit(ctx, limit: int):
-    vc = await get_member_vc(ctx.author)
-    if not vc:
-        return await ctx.send(embed=discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red()))
-    await vc.edit(user_limit=limit)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} {vc.name} limit set to {limit}.", color=discord.Color.green()))
-
-@vc.command()
-async def rename(ctx, *, name: str):
-    vc = await get_member_vc(ctx.author)
-    if not vc:
-        return await ctx.send(embed=discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red()))
-    await vc.edit(name=name)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} VC renamed to {name}.", color=discord.Color.green()))
-
-@vc.command()
-async def transfer(ctx, member: discord.Member):
-    vc = await get_member_vc(ctx.author)
-    if not vc:
-        return await ctx.send(embed=discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red()))
-    await vc.set_permissions(member, connect=True, manage_channels=True)
-    await vc.set_permissions(ctx.author, manage_channels=False)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} Ownership transferred to {member.display_name}.", color=discord.Color.green()))
-
-@vc.command()
-async def unmute(ctx):
-    vc = await get_member_vc(ctx.author)
-    if not vc:
-        return await ctx.send(embed=discord.Embed(description=f"{FAIL} You are not in a voice channel.", color=discord.Color.red()))
-    for m in vc.members:
-        await m.edit(mute=False)
-    await ctx.send(embed=discord.Embed(description=f"{SUCCESS} Everyone unmuted in {vc.name}.", color=discord.Color.green()))
-
-# ---------- FLASK KEEPALIVE ----------
-app = Flask("")
-
-@app.route("/")
-def home():
-    return "Bot is running!"
-
-def run():
-    app.run(host="0.0.0.0", port=8080)
-
-def keep_alive():
-    t = threading.Thread(target=run)
-    t.start()
-
-keep_alive()
-bot.run(TOKEN)
+    await ctx.send(embed=discord.Embed
