@@ -13,6 +13,7 @@ intents.members = True
 intents.guilds = True
 intents.voice_states = True
 intents.messages = True
+intents.message_content = True  # needed for prefix commands
 
 bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
@@ -34,9 +35,13 @@ UNMUTE_VCS = ["Unmute VC 1", "Unmute VC 2"]
 # Keep track of server setup
 server_setup = {}
 
-# ---------- BOT COMMANDS ----------
+# ---------- BOT EVENTS ----------
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
 
-@bot.command()
+# ---------- BOT COMMANDS ----------
+@bot.command(name="vmsetup")
 @commands.has_permissions(administrator=True)
 async def vmsetup(ctx):
     guild = ctx.guild
@@ -74,7 +79,7 @@ async def vmsetup(ctx):
         embed = discord.Embed(title="VM System Error", description=f"{FAIL} Failed to set up VM system.\nError: {e}", color=discord.Color.red())
         await ctx.send(embed=embed)
 
-@bot.command()
+@bot.command(name="vmreset")
 @commands.has_permissions(administrator=True)
 async def vmreset(ctx):
     guild = ctx.guild
@@ -99,11 +104,11 @@ async def vmreset(ctx):
         embed = discord.Embed(title="VM System Error", description=f"{FAIL} Failed to reset VM system.\nError: {e}", color=discord.Color.red())
         await ctx.send(embed=embed)
 
-@bot.command()
+@bot.command(name="vmcommands")
 async def vmcommands(ctx):
     embed = discord.Embed(title="VM Master Commands", color=discord.Color.blue())
-    embed.add_field(name=".vm setup", value="Setup VM system (Admin only)", inline=False)
-    embed.add_field(name=".vm reset", value="Reset VM system (Admin only)", inline=False)
+    embed.add_field(name=".vmsetup", value="Setup VM system (Admin only)", inline=False)
+    embed.add_field(name=".vmreset", value="Reset VM system (Admin only)", inline=False)
     embed.add_field(name="VC Master", value="Join Public/Private VC to create your own temporary VC", inline=False)
     await ctx.send(embed=embed)
 
@@ -125,12 +130,14 @@ async def on_voice_state_update(member, before, after):
         if after.channel.name == CREATE_PUBLIC_VC:
             category = get(guild.categories, id=setup["public_category"])
             vc_name = f"{member.name}'s Public VC"
-            perms = None  # No special overwrites
+            perms = None
         else:
             category = get(guild.categories, id=setup["private_category"])
             vc_name = f"{member.name}'s Private VC"
-            perms = {guild.default_role: discord.PermissionOverwrite(connect=False),
-                     member: discord.PermissionOverwrite(connect=True)}
+            perms = {
+                guild.default_role: discord.PermissionOverwrite(connect=False),
+                member: discord.PermissionOverwrite(connect=True)
+            }
 
         # Create temp VC
         if perms:
