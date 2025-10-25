@@ -2,13 +2,14 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import os
-import asyncio
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=".", intents=intents)
-bot.remove_command("help")
+tree = bot.tree
 
-# Custom emojis
+GUILD_ID = int(os.getenv("GUILD_ID"))  # replace with your guild ID or env variable
+
+# Emojis
 EMOJIS = {
     "lock": "<:lockv:1431214489981812778>",
     "unlock": "<:unlockv:1431214488316674128>",
@@ -18,124 +19,113 @@ EMOJIS = {
     "limit": "<:limitv:1431213601787744367>",
     "reset": "<:resetv:1431213603536506890>",
     "info": "<:infov:1431213604895719565>",
-    "edit": "<:editv:1431213607814828113>",
+    "rename": "<:editv:1431213607814828113>",
     "transfer": "<:transferv:1431213610348183582>",
     "check": "<:checkv:1431397623193010257>",
-    "fail": "<:failv:1431396982768930929>",
-    "dash": "<:dashv:1431213611858002010>"
+    "fail": "<:failv:1431396982768930929>"
 }
 
-# Embed color
-EMBED_COLOR = discord.Color.blue()
-
-# Keep track of guild data
+# Store guild VC info
 guild_data = {}
 
-# Keep alive Flask server
-from flask import Flask
-app = Flask(__name__)
+# -----------------------
+# Embed helper
+# -----------------------
+def create_embed(title, description, success=True):
+    color = discord.Color.blue()
+    embed = discord.Embed(title=title, description=description, color=color)
+    return embed
 
-@app.route('/')
-def home():
-    return "Bot is running."
-
-def keep_alive():
-    from threading import Thread
-    Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
-
-keep_alive()
-
-# -----------------
-# Utility Functions
-# -----------------
-async def create_category_if_not_exists(guild, name):
-    for cat in guild.categories:
-        if cat.name == name:
-            return cat
-    return await guild.create_category(name)
-
-async def create_vc(guild, name, category=None, temp=False):
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(connect=True)
-    }
-    channel = await guild.create_voice_channel(name=name, overwrites=overwrites, category=category)
-    if temp:
-        guild_data.setdefault(str(guild.id), {}).setdefault("temp_vcs", []).append(channel.id)
-    return channel
-
-def embed_success(title, description):
-    return discord.Embed(
-        title=title,
-        description=f"{EMOJIS['check']} {description}",
-        color=EMBED_COLOR
-    )
-
-def embed_fail(title, description):
-    return discord.Embed(
-        title=title,
-        description=f"{EMOJIS['fail']} {description}",
-        color=EMBED_COLOR
-    )
-
-# -----------------
-# VM Setup Command
-# -----------------
-@bot.command(name="vm")
-async def vm_setup(ctx, action=None):
+# -----------------------
+# VM Setup / Reset
+# -----------------------
+async def setup_vm(ctx):
     guild = ctx.guild
+    guild_data[guild.id] = {"vcs": {}, "interface": None}
+
+    # Create categories if not exist
+    categories = {}
+    for name in ["Join-to-Create", "Public VCs", "Private VCs", "Unmute Public", "Unmute Private"]:
+        cat = discord.utils.get(guild.categories, name=name)
+        if not cat:
+            cat = await guild.create_category(name)
+        categories[name] = cat
+
+    # Create join-to-create channels
+    for i in range(1, 4):
+        chan_name = f"Join VC {i}"
+        if not discord.utils.get(categories["Join-to-Create"].channels, name=chan_name):
+            await guild.create_voice_channel(chan_name, category=categories["Join-to-Create"])
+
+    # Create interface message
+    interface = await categories["Join-to-Create"].text_channels[0].send(
+        embed=create_embed("VC Interface", "Use the buttons below to manage your VC!"),
+        view=InterfaceView()
+    )
+    guild_data[guild.id]["interface"] = interface.id
+
+    await ctx.send(embed=create_embed("VM Setup", f"{EMOJIS['check']} VM system setup successfully!"))
+
+async def reset_vm(ctx):
+    guild = ctx.guild
+    for cat in guild.categories:
+        if cat.name in ["Join-to-Create", "Public VCs", "Private VCs", "Unmute Public", "Unmute Private"]:
+            for ch in cat.channels:
+                await ch.delete()
+            await cat.delete()
+    guild_data[guild.id] = {}
+    await ctx.send(embed=create_embed("VM Reset", f"{EMOJIS['check']} VM system reset successfully!"))
+
+# -----------------------
+# Interface buttons
+# -----------------------
+class InterfaceView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Lock VC", style=discord.ButtonStyle.red, emoji=EMOJIS["lock"])
+    async def lock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=create_embed("Lock VC", f"{EMOJIS['check']} VC locked."), ephemeral=True)
+
+    @discord.ui.button(label="Unlock VC", style=discord.ButtonStyle.green, emoji=EMOJIS["unlock"])
+    async def unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=create_embed("Unlock VC", f"{EMOJIS['check']} VC unlocked."), ephemeral=True)
+
+    @discord.ui.button(label="Kick", style=discord.ButtonStyle.gray, emoji=EMOJIS["kick"])
+    async def kick(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(embed=create_embed("Kick VC", f"{EMOJIS['check']} User kicked."), ephemeral=True)
+
+# -----------------------
+# Prefix commands
+# -----------------------
+@bot.command()
+async def vm(ctx, action=None):
     if action == "setup":
-        # Create categories
-        join_cat = await create_category_if_not_exists(guild, "Join to Create")
-        public_cat = await create_category_if_not_exists(guild, "Public VCs")
-        priv_cat = await create_category_if_not_exists(guild, "Private VCs")
-        unmute_cat = await create_category_if_not_exists(guild, "Unmute VCs")
-
-        # Create Join-to-create channels
-        for i in range(1,4):
-            await create_vc(guild, f"Join VC {i}", join_cat)
-
-        # Interface embed
-        embed = discord.Embed(title="VC Interface", color=EMBED_COLOR)
-        embed.description = (
-            f"{EMOJIS['lock']} `vc lock` {EMOJIS['dash']} Locks the VC\n"
-            f"{EMOJIS['unlock']} `vc unlock` {EMOJIS['dash']} Unlocks the VC\n"
-            f"{EMOJIS['kick']} `vc kick` {EMOJIS['dash']} Kicks a user\n"
-            f"{EMOJIS['ban']} `vc ban` {EMOJIS['dash']} Bans a user\n"
-            f"{EMOJIS['permit']} `vc permit` {EMOJIS['dash']} Permits a user\n"
-            f"{EMOJIS['limit']} `vc limit` {EMOJIS['dash']} Changes VC limit\n"
-            f"{EMOJIS['reset']} `vc reset` {EMOJIS['dash']} Resets VC limit/perms\n"
-            f"{EMOJIS['info']} `vc info` {EMOJIS['dash']} Shows VC info\n"
-            f"{EMOJIS['edit']} `vc rename` {EMOJIS['dash']} Renames VC\n"
-            f"{EMOJIS['transfer']} `vc transfer` {EMOJIS['dash']} Transfers ownership"
-        )
-
-        # Buttons
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="Public VC", style=discord.ButtonStyle.green))
-        view.add_item(discord.ui.Button(label="Private VC", style=discord.ButtonStyle.gray))
-        view.add_item(discord.ui.Button(label="Join Random VC", style=discord.ButtonStyle.blurple))
-
-        await ctx.send(embed=embed, view=view)
-        await ctx.send(embed=embed_success("Setup Complete", "VC system has been setup!"))
-
+        await setup_vm(ctx)
     elif action == "reset":
-        # Reset all data
-        guild_data[str(guild.id)] = {}
-        await ctx.send(embed=embed_success("Reset Complete", "VC system has been reset."))
-
+        await reset_vm(ctx)
     else:
-        await ctx.send(embed=embed_fail("Invalid Command", "Use `vm setup` or `vm reset`"))
+        await ctx.send(embed=create_embed("Error", f"{EMOJIS['fail']} Invalid VM command"))
 
-# -----------------
-# Slash Commands
-# -----------------
-@bot.tree.command(name="vm")
-@app_commands.describe(action="setup or reset the VC system")
-async def vm(interaction: discord.Interaction, action: str):
-    ctx = await bot.get_context(interaction.message)
-    await vm_setup(ctx, action)
+# -----------------------
+# Slash commands
+# -----------------------
+@tree.command(name="vm", description="VM setup/reset", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(action="setup or reset")
+async def slash_vm(interaction: discord.Interaction, action: str):
+    if action.lower() == "setup":
+        await setup_vm(interaction)
+    elif action.lower() == "reset":
+        await reset_vm(interaction)
+    else:
+        await interaction.response.send_message(embed=create_embed("Error", f"{EMOJIS['fail']} Invalid VM command"), ephemeral=True)
 
-# -----------------
-# Run Bot
-# -----------------
+# -----------------------
+# Bot ready
+# -----------------------
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+    await tree.sync(guild=discord.Object(id=GUILD_ID))
+
 bot.run(os.getenv("TOKEN"))
