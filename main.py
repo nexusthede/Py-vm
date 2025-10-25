@@ -1,116 +1,169 @@
 import os
 import discord
 from discord.ext import commands, tasks
+from discord.utils import get
+from flask import Flask
+import threading
 
-TOKEN = os.getenv("TOKEN")  # Your bot token
-PREFIX = "."  # Command prefix
-
-SUCCESS = "<:check_markv:1431619384987615383>"
-FAIL = "<:x_markv:1431619387168657479>"
+TOKEN = os.getenv("TOKEN")
 
 intents = discord.Intents.default()
 intents.members = True
+intents.guilds = True
 intents.voice_states = True
+intents.messages = True
 
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+bot = commands.Bot(command_prefix=".", intents=intents, help_command=None)
 
-# ---- UTILITY ----
-async def create_category(name, guild):
-    existing = discord.utils.get(guild.categories, name=name)
-    if existing:
-        return existing
-    return await guild.create_category(name)
+# Custom Emojis
+SUCCESS = "<:check_markv:1431619384987615383>"
+FAIL = "<:x_markv:1431619387168657479>"
 
-async def create_vc(name, category):
-    existing = discord.utils.get(category.voice_channels, name=name)
-    if existing:
-        return existing
-    return await category.create_voice_channel(name)
+# Category & VC Names
+JOIN_CREATE_CATEGORY = "Join to Create"
+PUBLIC_CATEGORY = "Public VCs"
+PRIVATE_CATEGORY = "Private VCs"
+UNMUTE_CATEGORY = "Unmute VCs"
 
-# ---- SETUP COMMAND ----
+CREATE_PUBLIC_VC = "Create Public VC"
+CREATE_PRIVATE_VC = "Create Private VC"
+
+UNMUTE_VCS = ["Unmute VC 1", "Unmute VC 2"]
+
+# Keep track of server setup
+server_setup = {}
+
+# ---------- BOT COMMANDS ----------
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def vmsetup(ctx):
     guild = ctx.guild
     try:
-        join_cat = await create_category("Join to Create", guild)
-        public_cat = await create_category("Public VCs", guild)
-        private_cat = await create_category("Private VCs", guild)
-        unmute_cat = await create_category("Unmute VCs", guild)
+        # Check if already setup
+        if guild.id in server_setup:
+            await ctx.send(f"{FAIL} VM system already set up for this server.")
+            return
 
-        # Permanent VCs in Join to Create
-        await create_vc("Create Public VC", join_cat)
-        await create_vc("Create Private VC", join_cat)
+        # Create Categories
+        join_category = await guild.create_category(JOIN_CREATE_CATEGORY)
+        public_category = await guild.create_category(PUBLIC_CATEGORY)
+        private_category = await guild.create_category(PRIVATE_CATEGORY)
+        unmute_category = await guild.create_category(UNMUTE_CATEGORY)
 
-        # 2 Unmute VCs
-        await create_vc("Unmute 1", unmute_cat)
-        await create_vc("Unmute 2", unmute_cat)
+        # Create Join-to-Create VCs
+        await guild.create_voice_channel(CREATE_PUBLIC_VC, category=join_category)
+        await guild.create_voice_channel(CREATE_PRIVATE_VC, category=join_category)
 
-        embed = discord.Embed(title="VM Setup", description=f"{SUCCESS} VM setup complete!", color=discord.Color.green())
-        await ctx.send(embed=embed)
+        # Create Unmute VCs
+        for vc_name in UNMUTE_VCS:
+            await guild.create_voice_channel(vc_name, category=unmute_category)
+
+        # Save setup
+        server_setup[guild.id] = {
+            "join_category": join_category.id,
+            "public_category": public_category.id,
+            "private_category": private_category.id,
+            "unmute_category": unmute_category.id
+        }
+
+        await ctx.send(f"{SUCCESS} VM system successfully set up!")
+
     except Exception as e:
-        embed = discord.Embed(title="VM Setup", description=f"{FAIL} Failed to setup VCs.\n{e}", color=discord.Color.red())
-        await ctx.send(embed=embed)
+        await ctx.send(f"{FAIL} Failed to set up VM system.\nError: {e}")
 
-# ---- RESET COMMAND ----
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def vmreset(ctx):
     guild = ctx.guild
     try:
-        categories = ["Join to Create", "Public VCs", "Private VCs", "Unmute VCs"]
-        for cat_name in categories:
-            cat = discord.utils.get(guild.categories, name=cat_name)
-            if cat:
-                for ch in cat.channels:
-                    await ch.delete()
-                await cat.delete()
-        embed = discord.Embed(title="VM Reset", description=f"{SUCCESS} VM reset complete!", color=discord.Color.green())
-        await ctx.send(embed=embed)
-    except Exception as e:
-        embed = discord.Embed(title="VM Reset", description=f"{FAIL} Failed to reset VM.\n{e}", color=discord.Color.red())
-        await ctx.send(embed=embed)
+        if guild.id not in server_setup:
+            await ctx.send(f"{FAIL} VM system is not set up in this server.")
+            return
 
-# ---- COMMAND LIST ----
+        # Remove all categories and their channels
+        setup = server_setup[guild.id]
+        for cat_id in setup.values():
+            category = get(guild.categories, id=cat_id)
+            if category:
+                for ch in category.channels:
+                    await ch.delete()
+                await category.delete()
+
+        server_setup.pop(guild.id)
+        await ctx.send(f"{SUCCESS} VM system has been reset.")
+
+    except Exception as e:
+        await ctx.send(f"{FAIL} Failed to reset VM system.\nError: {e}")
+
+
 @bot.command()
-async def vm(ctx):
+async def vmcommands(ctx):
     embed = discord.Embed(title="VM Commands", color=discord.Color.blue())
-    embed.add_field(name=f"{PREFIX}vmsetup", value="Setup all VM categories and permanent channels", inline=False)
-    embed.add_field(name=f"{PREFIX}vmreset", value="Delete all VM categories and channels", inline=False)
+    embed.add_field(name=".vmsetup", value="Setup VM system (Admin only)", inline=False)
+    embed.add_field(name=".vmreset", value="Reset VM system (Admin only)", inline=False)
+    embed.add_field(name="Join Public/Private VC", value="Automatically creates your VC when joining", inline=False)
     await ctx.send(embed=embed)
 
-# ---- AUTO TEMP VC CREATION ----
+
+# ---------- JOIN TO CREATE HANDLER ----------
 @bot.event
 async def on_voice_state_update(member, before, after):
+    if member.bot:
+        return
+
     guild = member.guild
-    if after.channel and after.channel.category:
-        cat_name = after.channel.category.name
-        vc_name = after.channel.name
+    if guild.id not in server_setup:
+        return
 
-        # If user joins Create Public VC or Create Private VC, make temp VC
-        if vc_name == "Create Public VC":
-            target_cat = discord.utils.get(guild.categories, name="Public VCs")
-            temp_vc = await guild.create_voice_channel(f"{member.display_name}'s VC", category=target_cat)
-            await member.move_to(temp_vc)
-        elif vc_name == "Create Private VC":
-            target_cat = discord.utils.get(guild.categories, name="Private VCs")
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(connect=False),
-                member: discord.PermissionOverwrite(connect=True, manage_channels=True)
-            }
-            temp_vc = await guild.create_voice_channel(f"{member.display_name}'s VC", overwrites=overwrites, category=target_cat)
-            await member.move_to(temp_vc)
+    setup = server_setup[guild.id]
+    join_category = get(guild.categories, id=setup["join_category"])
 
-    # Delete temp VC if empty and not permanent
-    if before.channel:
-        if before.channel.category and before.channel.category.name in ["Public VCs", "Private VCs"]:
-            if len(before.channel.members) == 0 and not before.channel.name.startswith("Create"):
-                await before.channel.delete()
+    if after.channel and after.channel.category == join_category:
+        # Determine type
+        if after.channel.name == CREATE_PUBLIC_VC:
+            category = get(guild.categories, id=setup["public_category"])
+            vc_name = f"{member.name}'s Public VC"
+        else:
+            category = get(guild.categories, id=setup["private_category"])
+            vc_name = f"{member.name}'s Private VC"
 
-# ---- BOT READY ----
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
+        # Create temp VC
+        temp_vc = await guild.create_voice_channel(vc_name, category=category)
+        await member.move_to(temp_vc)
 
-# ---- RUN BOT ----
+        # Optional: Set permissions for private VC
+        if category.id == setup["private_category"]:
+            await temp_vc.set_permissions(guild.default_role, connect=False)
+            await temp_vc.set_permissions(member, connect=True)
+
+        # Delete VC when empty
+        def check_empty(vc):
+            return len(vc.members) == 0
+
+        async def delete_when_empty():
+            while True:
+                await discord.utils.sleep_until(discord.utils.utcnow() + discord.timedelta(seconds=10))
+                if check_empty(temp_vc):
+                    await temp_vc.delete()
+                    break
+
+        bot.loop.create_task(delete_when_empty())
+
+# ---------- FLASK KEEPALIVE ----------
+app = Flask("")
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+def run():
+    app.run(host="0.0.0.0", port=8080)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.start()
+
+keep_alive()
 bot.run(TOKEN)
