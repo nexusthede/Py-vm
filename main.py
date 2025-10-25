@@ -32,9 +32,9 @@ CREATE_PRIVATE_VC = "Create Private VC"
 
 UNMUTE_VCS = ["Unmute VC 1", "Unmute VC 2"]
 
-# Track server setup
+# Track server setup and temp VCs
 server_setup = {}
-temp_vcs = {}  # Track temporary VCs per user
+temp_vcs = {}  # {user_id: vc_id}
 
 # ---------- BOT EVENTS ----------
 @bot.event
@@ -58,14 +58,15 @@ async def vmsetup(ctx):
         private_category = await guild.create_category(PRIVATE_CATEGORY)
         unmute_category = await guild.create_category(UNMUTE_CATEGORY)
 
-        # Create join-to-create VCs
-        await guild.create_voice_channel(CREATE_PUBLIC_VC, category=join_category)
-        await guild.create_voice_channel(CREATE_PRIVATE_VC, category=join_category)
+        # Create join-to-create VCs (avoid duplicates)
+        if not discord.utils.get(join_category.channels, name=CREATE_PUBLIC_VC):
+            await guild.create_voice_channel(CREATE_PUBLIC_VC, category=join_category)
+        if not discord.utils.get(join_category.channels, name=CREATE_PRIVATE_VC):
+            await guild.create_voice_channel(CREATE_PRIVATE_VC, category=join_category)
 
         # Create unmute VCs (avoid duplicates)
         for vc_name in UNMUTE_VCS:
-            existing = discord.utils.get(unmute_category.channels, name=vc_name)
-            if not existing:
+            if not discord.utils.get(unmute_category.channels, name=vc_name):
                 await guild.create_voice_channel(vc_name, category=unmute_category)
 
         # Save setup
@@ -136,21 +137,20 @@ async def on_voice_state_update(member, before, after):
     setup = server_setup[guild.id]
     join_category = get(guild.categories, id=setup["join_category"])
 
-    # User joins a join-to-create VC
     if after.channel and after.channel.category == join_category:
         if member.id in temp_vcs:
-            return  # Already has a temp VC
+            return  # User already has a temp VC
 
+        # Determine VC type and category
         if after.channel.name == CREATE_PUBLIC_VC:
             category = get(guild.categories, id=setup["public_category"])
-            vc_name = f"{member.display_name}'s VC"
-            perms = None
-        else:
+            perms = None  # Public VC
+        else:  # CREATE_PRIVATE_VC
             category = get(guild.categories, id=setup["private_category"])
-            vc_name = f"{member.display_name}'s VC"
             perms = {guild.default_role: discord.PermissionOverwrite(connect=False),
                      member: discord.PermissionOverwrite(connect=True)}
 
+        vc_name = f"{member.display_name}'s channel"
         temp_vc = await guild.create_voice_channel(vc_name, category=category, overwrites=perms)
         temp_vcs[member.id] = temp_vc.id
         await member.move_to(temp_vc)
@@ -176,10 +176,11 @@ async def get_member_vc(member):
         return member.voice.channel
     return None
 
-@bot.group(invoke_without_command=True)
+@bot.group()
 async def vc(ctx):
-    embed = discord.Embed(description=f"{FAIL} Invalid VC command. Use `.vc lock/unlock/kick/ban/permit/limit/rename/transfer/unmute`", color=discord.Color.red())
-    await ctx.send(embed=embed)
+    if ctx.invoked_subcommand is None:
+        embed = discord.Embed(description=f"{FAIL} Invalid VC command. Use `.vc lock/unlock/kick/ban/permit/limit/rename/transfer/unmute`", color=discord.Color.red())
+        await ctx.send(embed=embed)
 
 @vc.command()
 async def lock(ctx):
